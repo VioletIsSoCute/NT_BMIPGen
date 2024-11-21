@@ -1,0 +1,12 @@
+LICENSE.txt
+README.md
+setup.py
+NT_BMIPGen/__init__.py
+NT_BMIPGen/problem_generator.py
+NT_BMIPGen/problem_loading.py
+NT_BMIPGen/triviality.py
+NT_BMIPGen.egg-info/PKG-INFO
+NT_BMIPGen.egg-info/SOURCES.txt
+NT_BMIPGen.egg-info/dependency_links.txt
+NT_BMIPGen.egg-info/requires.txt
+NT_BMIPGen.egg-info/top_level.txt
