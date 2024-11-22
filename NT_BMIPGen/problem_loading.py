@@ -22,128 +22,104 @@ import numpy as np
 import json
 import os
 #%%
-def load_problem(folder: str, model: ConcreteModel, default_bounds: tuple = (-10, 10)) -> None:
+def load_problem(folder, model, default_bounds=(-10, 10)):
     """
-    Load and construct a bi-level optimization problem from files.
-    
-    This function reads problem data from files and constructs the corresponding
-    optimization model including variables, constraints, and objectives for both
-    upper and lower level problems.
+    Load and configure an optimization problem from files.
     
     Args:
-        folder (str): Directory containing problem files
-        model (ConcreteModel): Pyomo model to be populated
-        default_bounds (tuple): Default bounds for variables (min, max)
-    
-    Returns:
-        None: The model is modified in place
-    
-    Files required:
-        - metadata.json: Problem dimensions and parameters
-        - {constraint_type}_A.csv: Constraint matrices
-        - {constraint_type}_b.csv: Constraint right-hand sides
-        - {objective_type}.csv: Objective function coefficients
+        folder: Path to folder containing problem definition files
+        model: Pyomo model instance to configure
+        default_bounds: Default bounds for variables (min, max)
     """
-    
-    # Load problem dimensions from metadata
+    # Load parameters from metadata
     with open(os.path.join(folder, 'metadata.json'), 'r') as f:
         parameters = json.load(f)
-
-    # Define decision variables
-    # Upper level variables (ud: upper decision, uc: upper constraint)
-    model.x_ud = Var(range(parameters["x_ud"]), domain=Reals, bounds=default_bounds)
-    model.x_uc = Var(range(parameters["x_uc"]), domain=Reals, bounds=default_bounds)
-    # Lower level variables (ld: lower decision, lc: lower constraint)
-    model.x_ld = Var(range(parameters["x_ld"]), domain=Reals, bounds=default_bounds)
-    model.x_lc = Var(range(parameters["x_lc"]), domain=Reals, bounds=default_bounds)
     
-    # Binary variables for both levels
-    model.y_ud = Var(range(parameters["y_ud"]), domain=Binary, bounds=default_bounds)
-    model.y_uc = Var(range(parameters["y_uc"]), domain=Binary, bounds=default_bounds)
-    model.y_ld = Var(range(parameters["y_ld"]), domain=Binary, bounds=default_bounds)
-    model.y_lc = Var(range(parameters["y_lc"]), domain=Binary, bounds=default_bounds)
-
-    # Initialize constraint list
+    # Initialize variables
+    var_types = {
+        'x_ud': Reals, 'x_uc': Reals, 'x_ld': Reals, 'x_lc': Reals,
+        'y_ud': Binary, 'y_uc': Binary, 'y_ld': Binary, 'y_lc': Binary
+    }
+    
+    for var_name, domain in var_types.items():
+        setattr(model, var_name, 
+                Var(range(parameters[var_name]), 
+                    domain=domain, 
+                    bounds=default_bounds))
+    
+    # Initialize constraints list
     model.constraints = ConstraintList()
-
-    def add_constraints(xs: list, g_file: str):
-        """
-        Helper function to add constraints to the model.
-        
-        Args:
-            xs (list): List of variable types involved in constraints
-            g_file (str): Base name for constraint files
-        """
-        if sum([parameters[i] for i in xs]) != 0:
-            # Load constraint matrix and vector
-            A = pd.read_csv(os.path.join(folder, f"{g_file}_A.csv")).values
-            b = pd.read_csv(os.path.join(folder, f"{g_file}_b.csv")).values.flatten()
-            size = b.size
-            k = np.cumsum(np.array([parameters[i] for i in xs]))
+    
+    def add_constraints(var_groups, file_prefix):
+        """Helper function to add constraints for a group of variables"""
+        if sum(parameters[x] for x in var_groups) == 0:
+            return
             
-            # Add constraints to model
-            for i in range(size):
-                exprs = []
-                # Build expressions for each variable type
-                for idx in range(len(xs)):
-                    start = k[idx-1] if idx > 0 else 0
-                    var_name = f"model.{xs[idx]}"
-                    expr = sum(A[i, j] * eval(var_name)[j - start] 
-                             for j in range(start, k[idx]))
-                    exprs.append(expr)
-                # Add combined constraint
-                model.constraints.add(expr = sum(exprs) <= b[i])
-
-    # Add different types of constraints
-    # Upper level decoupled constraints
-    add_constraints(["x_ud", "y_ud"], 'G_ud')
-    # Lower level decoupled constraints
-    add_constraints(["x_ld", "y_ld"], 'g_ld')
-    # Upper level coupled constraints
-    add_constraints(["x_ud", "y_ud", "x_uc", "y_uc"], 'G_uc')
-    # Lower level coupled constraints
-    add_constraints(["x_ld", "y_ld", "x_lc", "y_lc"], 'g_lc')
-    # Global constraints
-    add_constraints(["x_uc", "y_uc", "x_lc", "y_lc"], 'g_g')
-
-    def build_objective(xs: list, obj_file: str) -> float:
-        """
-        Helper function to build objective terms.
+        A = pd.read_csv(os.path.join(folder, f"{file_prefix}_A.csv")).values
+        b = pd.read_csv(os.path.join(folder, f"{file_prefix}_b.csv")).values.flatten()
+        k = np.cumsum([parameters[x] for x in var_groups])
         
-        Args:
-            xs (list): List of variable types in objective
-            obj_file (str): Base name for objective file
-            
-        Returns:
-            float: Objective term value
-        """
-        if sum([parameters[i] for i in xs]) == 0:
+        for i in range(b.size):
+            expr = 0
+            start_idx = 0
+            for j, var_name in enumerate(var_groups):
+                var = getattr(model, var_name)
+                end_idx = k[j]
+                cols = range(start_idx, end_idx)
+                expr += sum(A[i, j] * var[j - start_idx] for j in cols)
+                start_idx = end_idx
+            model.constraints.add(expr <= b[i])
+    
+    def calculate_objective(var_groups, file_name):
+        """Helper function to calculate objective terms"""
+        if sum(parameters[x] for x in var_groups) == 0:
             return 0
             
-        o = pd.read_csv(os.path.join(folder, f"{obj_file}.csv")).values.flatten()
-        k = np.cumsum(np.array([parameters[i] for i in xs]))
+        o = pd.read_csv(os.path.join(folder, f"{file_name}.csv")).values.flatten()
+        k = np.cumsum([parameters[x] for x in var_groups])
         
-        exprs = []
-        for idx in range(len(xs)):
-            start = k[idx-1] if idx > 0 else 0
-            var_name = f"model.{xs[idx]}"
-            expr = sum(o[j] * eval(var_name)[j - start] 
-                      for j in range(start, k[idx]))
-            exprs.append(expr)
-        return sum(exprs)
-
-    # Build objective components
-    F_u = build_objective(["x_ud", "y_ud"], 'F_u')  # Upper variables upper level
-    F_l = build_objective(["x_ld", "y_ld"], 'F_l')  # Lower variables upper level
-    F_c = build_objective(["x_uc", "y_uc", "x_lc", "y_lc"], 'F_c')  # Coupled variables upper level
-    ff_l = build_objective(["x_ld", "y_ld"], 'ff_l')  # Lower variables lower level
-    ff_c = build_objective(["x_uc", "y_uc", "x_lc", "y_lc"], 'ff_c')  # coupled variables lower level
-
-    # Combine objectives
-    model.upper_objective = F_u + F_l + F_c  # Total upper level objective
-    model.lower_objective = ff_l + ff_c  # Total lower level objective
+        expr = 0
+        start_idx = 0
+        for j, var_name in enumerate(var_groups):
+            var = getattr(model, var_name)
+            end_idx = k[j]
+            cols = range(start_idx, end_idx)
+            expr += sum(o[j] * var[j - start_idx] for j in cols)
+            start_idx = end_idx
+        return expr
     
-    # Set the model's objective
+    # Add constraints
+    constraint_groups = [
+        (['x_ud', 'y_ud'], 'G_ud'),
+        (['x_ld', 'y_ld'], 'g_ld'),
+        (['x_ud', 'y_ud', 'x_uc', 'y_uc'], 'G_uc'),
+        (['x_ld', 'y_ld', 'x_lc', 'y_lc'], 'g_lc'),
+        (['x_uc', 'y_uc', 'x_lc', 'y_lc'], 'g_g')
+    ]
+    
+    for var_groups, file_prefix in constraint_groups:
+        add_constraints(var_groups, file_prefix)
+    
+    # Calculate objectives
+    objective_groups = [
+        (['x_ud', 'y_ud'], 'F_u', 'F_pu'),
+        (['x_ld', 'y_ld'], 'F_l', 'F_pl'),
+        (['x_uc', 'y_uc', 'x_lc', 'y_lc'], 'F_c', 'F_mu'),
+        (['x_ld', 'y_ld'], 'ff_l', 'ff_pl'),
+        (['x_uc', 'y_uc', 'x_lc', 'y_lc'], 'ff_c', 'ff_ml')
+    ]
+    
+    objectives = {}
+    for var_groups, file_name, obj_name in objective_groups:
+        objectives[obj_name] = calculate_objective(var_groups, file_name)
+    
+    # Set final objectives
+    model.upper_objective = (objectives['F_pu'] + 
+                           objectives['F_pl'] + 
+                           objectives['F_mu'])
+    model.lower_objective = (objectives['ff_pl'] + 
+                           objectives['ff_ml'])
+    
     model.objective = Objective(expr=model.upper_objective, sense=minimize)
 #%%
 """

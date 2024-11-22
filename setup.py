@@ -5,7 +5,7 @@ with open("README.md", "r",encoding="utf-8") as f:
 
 setup(
     name='NT_BMIPGen',
-    version='0.4.4',
+    version='0.4.5',
     author='Meng-Lin Tsai',
     author_email='mtsai47@wisc.edu',
     url = "https://avraamidougroup.che.wisc.edu",
